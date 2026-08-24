@@ -29,6 +29,7 @@ import {
 } from 'react-native-safe-area-context';
 import {
   createSessionFromUrl,
+  deleteAccount,
   isAuthRedirectUrl,
   sendMagicLink,
   signInWithGoogle,
@@ -216,6 +217,7 @@ function AppContent() {
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [isGoogleSigningIn, setIsGoogleSigningIn] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [isSendingMagicLink, setIsSendingMagicLink] = useState(false);
   const [magicLinkMessage, setMagicLinkMessage] = useState('');
   const [isLoginPromptVisible, setIsLoginPromptVisible] = useState(false);
@@ -516,6 +518,31 @@ function AppContent() {
   const handleSignOut = async () => {
     await signOut();
     setIsAccountModalVisible(false);
+  };
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      'Hesabı Sil',
+      'Bu işlem geri alınamaz. Hesabınız, buluttaki tüm kayıtlarınız ve paylaşımlarınız kalıcı olarak silinecek.',
+      [
+        { text: 'Vazgeç', style: 'cancel' },
+        {
+          text: 'Hesabımı Sil',
+          style: 'destructive',
+          onPress: async () => {
+            setIsDeletingAccount(true);
+            try {
+              await deleteAccount();
+              setIsAccountModalVisible(false);
+            } catch {
+              Alert.alert('Hata', 'Hesap silinemedi, lütfen tekrar deneyin.');
+            } finally {
+              setIsDeletingAccount(false);
+            }
+          },
+        },
+      ],
+    );
   };
 
   const handleGoogleSignIn = async () => {
@@ -1429,6 +1456,15 @@ function AppContent() {
                 >
                   <Text style={styles.categorySaveText}>Çıkış Yap</Text>
                 </Pressable>
+                <Pressable
+                  style={styles.deleteAccountButton}
+                  onPress={handleDeleteAccount}
+                  disabled={isDeletingAccount}
+                >
+                  <Text style={styles.deleteAccountButtonText}>
+                    {isDeletingAccount ? 'Siliniyor...' : 'Hesabımı Sil'}
+                  </Text>
+                </Pressable>
               </>
             ) : (
               <>
@@ -2098,6 +2134,8 @@ const styles = StyleSheet.create({
   categoryCancel: { paddingHorizontal: 14, paddingVertical: 13 },
   categorySave: { backgroundColor: '#B56A45', borderRadius: 10, paddingHorizontal: 20, paddingVertical: 13 },
   categorySaveText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
+  deleteAccountButton: { alignItems: 'center', marginTop: 14, padding: 8 },
+  deleteAccountButtonText: { color: '#C0392B', fontSize: 13, fontWeight: '700' },
   accountMessage: { color: '#3B8061', fontSize: 12, fontWeight: '600', marginTop: 10 },
   shareList: { marginTop: 18, maxHeight: 260 },
   shareListTitle: { color: '#4C4841', fontSize: 12, fontWeight: '700', marginBottom: 8 },

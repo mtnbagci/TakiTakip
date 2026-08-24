@@ -132,3 +132,16 @@ export const signOut = async () => {
   }
   await supabase.auth.signOut();
 };
+
+export const deleteAccount = async () => {
+  if (!supabase) {
+    throw new Error('Supabase yapılandırılmamış.');
+  }
+
+  const { error } = await supabase.rpc('delete_own_account');
+  if (error) {
+    throw error;
+  }
+
+  await supabase.auth.signOut();
+};

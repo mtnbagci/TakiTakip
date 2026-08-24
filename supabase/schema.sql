@@ -215,3 +215,23 @@ using (
       and shares.status = 'accepted'
   )
 );
+
+-- ============================================================
+-- Hesap silme (store politikalari geregi zorunlu)
+-- ============================================================
+
+-- auth.users satirini silmek, gift_records.user_id ve shares.owner_id/recipient_id
+-- uzerindeki "on delete cascade" foreign key'ler sayesinde kullanicinin tum
+-- kayitlarini ve paylasimlarini da otomatik siler.
+create or replace function public.delete_own_account()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  delete from auth.users where id = auth.uid();
+end;
+$$;
+
+grant execute on function public.delete_own_account() to authenticated;
