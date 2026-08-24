@@ -338,11 +338,12 @@ function AppContent() {
   }, [incomingUrl]);
 
   useEffect(() => {
-    if (!isCloudActive || !supabase) {
+    if (!isCloudActive || !supabase || !session) {
       return;
     }
 
     const client = supabase;
+    const userId = session.user.id;
     const useLocalDatabase = Platform.OS !== 'web';
     let cancelled = false;
 
@@ -351,6 +352,7 @@ function AppContent() {
         const { data, error } = await client
           .from('gift_records')
           .select('id, guest, type, quantity, value, note, has_quantity, direction, gift_date')
+          .eq('user_id', userId)
           .order('created_at', { ascending: false });
 
         if (error) {
@@ -435,7 +437,8 @@ function AppContent() {
     setIsBackingUp(true);
     const { count, error: countError } = await client
       .from('gift_records')
-      .select('id', { count: 'exact', head: true });
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', session.user.id);
     setIsBackingUp(false);
 
     if (countError) {
@@ -612,8 +615,11 @@ function AppContent() {
   };
 
   const loadOutgoingShares = async () => {
+    if (!session) {
+      return;
+    }
     try {
-      setOutgoingShares(await getOutgoingShares());
+      setOutgoingShares(await getOutgoingShares(session.user.id));
     } catch {
       setShareMessage('Paylaşım listesi yüklenemedi.');
     }

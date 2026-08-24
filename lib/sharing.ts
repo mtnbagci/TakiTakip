@@ -33,7 +33,7 @@ export const createShare = async (recipientEmail: string) => {
   }
 };
 
-export const getOutgoingShares = async (): Promise<OutgoingShare[]> => {
+export const getOutgoingShares = async (ownerId: string): Promise<OutgoingShare[]> => {
   if (!supabase) {
     return [];
   }
@@ -41,6 +41,7 @@ export const getOutgoingShares = async (): Promise<OutgoingShare[]> => {
   const { data, error } = await supabase
     .from('shares')
     .select('id, recipient_id, recipient_email, status, created_at')
+    .eq('owner_id', ownerId)
     .order('created_at', { ascending: false });
 
   if (error) {
