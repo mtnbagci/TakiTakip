@@ -2,8 +2,8 @@ name: Keep Supabase Alive
 
 on:
   schedule:
-    # Her Pazartesi 09:00 UTC - Supabase'in 7 gunluk inaktivite limitinin altinda kalmak icin
-    - cron: '0 9 * * 1'
+    # Pazartesi ve Persembe 09:00 UTC (4 gunde bir) - Supabase'in 7 gunluk inaktivite limitinin altinda kalmak icin
+    - cron: '0 9 * * 1,4'
   workflow_dispatch: {}
 
 jobs:
