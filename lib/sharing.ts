@@ -29,7 +29,7 @@ export const createShare = async (recipientEmail: string) => {
   });
 
   if (error) {
-    throw error;
+    throw new Error(error.message);
   }
 };
 

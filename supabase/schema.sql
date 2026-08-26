@@ -235,3 +235,68 @@ end;
 $$;
 
 grant execute on function public.delete_own_account() to authenticated;
+
+-- ============================================================
+-- Etkinlikler (dugun, sunnet, nisan gibi ayri kayit gruplari)
+-- ============================================================
+
+create table if not exists public.events (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  user_id uuid not null references auth.users (id) on delete cascade,
+  created_at timestamptz not null default timezone('utc', now())
+);
+
+alter table public.events
+  alter column user_id set default auth.uid();
+
+alter table public.events enable row level security;
+
+drop policy if exists "Users can read own events" on public.events;
+drop policy if exists "Users can add own events" on public.events;
+drop policy if exists "Users can update own events" on public.events;
+drop policy if exists "Users can delete own events" on public.events;
+
+create policy "Users can read own events"
+on public.events for select
+to authenticated
+using (auth.uid() = user_id);
+
+create policy "Users can add own events"
+on public.events for insert
+to authenticated
+with check (auth.uid() = user_id);
+
+create policy "Users can update own events"
+on public.events for update
+to authenticated
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+create policy "Users can delete own events"
+on public.events for delete
+to authenticated
+using (auth.uid() = user_id);
+
+alter table public.gift_records
+  add column if not exists event_id uuid references public.events (id) on delete cascade;
+
+-- Mevcut kayitlari (event_id bos olanlari) her kullanici icin olusturulan
+-- birer "Genel" etkinlige atar. Tekrar calistirildiginda zaten atanmis
+-- kayitlar icin hicbir sey yapmaz (idempotent).
+do $$
+declare
+  r record;
+  new_event_id uuid;
+begin
+  for r in
+    select distinct user_id from public.gift_records where event_id is null and user_id is not null
+  loop
+    insert into public.events (name, user_id) values ('Genel', r.user_id)
+    returning id into new_event_id;
+
+    update public.gift_records
+    set event_id = new_event_id
+    where user_id = r.user_id and event_id is null;
+  end loop;
+end $$;

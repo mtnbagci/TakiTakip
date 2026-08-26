@@ -41,13 +41,17 @@ import {
   clearLocalRecords,
   deleteLocalRecord,
   getLocalCategories,
+  getLocalEvents,
   getLocalRecords,
   initializeLocalDatabase,
+  replaceLocalEvents,
   replaceLocalRecords,
   saveLocalRecord,
   saveLocalCategory,
+  saveLocalEvent,
   setLastSyncAt,
   type GiftDirection,
+  type LocalEvent,
   type LocalGiftRecord,
 } from './lib/localDb';
 import {
@@ -73,6 +77,7 @@ type GiftRecord = {
   hasQuantity: boolean;
   direction: GiftDirection;
   giftDate: string;
+  eventId: string;
 };
 
 const todayIsoDate = () => new Date().toISOString().slice(0, 10);
@@ -162,6 +167,7 @@ const toSupabaseRow = (record: LocalGiftRecord) => ({
   has_quantity: record.hasQuantity,
   direction: record.direction,
   gift_date: record.giftDate,
+  event_id: record.eventId || null,
 });
 
   
@@ -178,6 +184,13 @@ export default function App() {
 function AppContent() {
   const insets = useSafeAreaInsets();
   const [records, setRecords] = useState<GiftRecord[]>([]);
+  const [events, setEvents] = useState<LocalEvent[]>([]);
+  const [selectedEventId, setSelectedEventId] = useState('');
+  const [isEventPickerVisible, setIsEventPickerVisible] = useState(false);
+  const [isAddEventModalVisible, setIsAddEventModalVisible] = useState(false);
+  const [newEventName, setNewEventName] = useState('');
+  const [isSavingEvent, setIsSavingEvent] = useState(false);
+  const [addEventContext, setAddEventContext] = useState<'main' | 'form'>('main');
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('Tümü');
   const [selectedDirection, setSelectedDirection] = useState<'Tümü' | GiftDirection>('Tümü');
@@ -191,6 +204,8 @@ function AppContent() {
   const [hasQuantity, setHasQuantity] = useState(false);
   const [direction, setDirection] = useState<GiftDirection>('Gelen');
   const [giftDate, setGiftDate] = useState(todayIsoDate());
+  const [formEventId, setFormEventId] = useState('');
+  const [isFormEventPickerVisible, setIsFormEventPickerVisible] = useState(false);
   const [isComparingValue, setIsComparingValue] = useState(false);
   const [valueComparison, setValueComparison] = useState<{
     guest: string;
@@ -257,6 +272,7 @@ function AppContent() {
         await initializeLocalDatabase();
         const localRecords = await getLocalRecords();
         const localCategories = await getLocalCategories();
+        const localEvents = await getLocalEvents();
         if (!cancelled) {
           setRecords(
             localRecords.map((record) => ({
@@ -267,6 +283,8 @@ function AppContent() {
           setCustomCategories(
             localCategories.filter((category) => !defaultCategories.includes(category)),
           );
+          setEvents(localEvents);
+          setSelectedEventId((current) => current || localEvents[0]?.id || '');
         }
       } catch {
         if (!cancelled) {
@@ -316,8 +334,15 @@ function AppContent() {
         setDbError('');
         setViewingShare(null);
         setSharedRecords([]);
+        setEvents([]);
+        setSelectedEventId('');
         if (Platform.OS !== 'web') {
-          void clearLocalRecords();
+          void clearLocalRecords().then(async () => {
+            await initializeLocalDatabase();
+            const restoredEvents = await getLocalEvents();
+            setEvents(restoredEvents);
+            setSelectedEventId(restoredEvents[0]?.id ?? '');
+          });
         }
       }
     });
@@ -349,9 +374,32 @@ function AppContent() {
 
     const syncFromCloud = async () => {
       try {
+        const { data: eventData, error: eventError } = await client
+          .from('events')
+          .select('id, name')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: true });
+
+        if (!eventError) {
+          const syncedEvents = eventData ?? [];
+          if (syncedEvents.length || !events.length) {
+            if (useLocalDatabase) {
+              await replaceLocalEvents(syncedEvents);
+            }
+            if (!cancelled) {
+              setEvents(syncedEvents);
+              setSelectedEventId((current) =>
+                syncedEvents.some((event) => event.id === current)
+                  ? current
+                  : syncedEvents[0]?.id ?? current,
+              );
+            }
+          }
+        }
+
         const { data, error } = await client
           .from('gift_records')
-          .select('id, guest, type, quantity, value, note, has_quantity, direction, gift_date')
+          .select('id, guest, type, quantity, value, note, has_quantity, direction, gift_date, event_id')
           .eq('user_id', userId)
           .order('created_at', { ascending: false });
 
@@ -369,6 +417,7 @@ function AppContent() {
           hasQuantity: Boolean(record.has_quantity),
           direction: (record.direction as GiftDirection) ?? 'Gelen',
           giftDate: record.gift_date ?? todayIsoDate(),
+          eventId: record.event_id ?? '',
         }));
 
         if (!syncedRecords.length && records.length) {
@@ -413,6 +462,12 @@ function AppContent() {
     const upload = async () => {
       setIsBackingUp(true);
       try {
+        if (events.length) {
+          await client
+            .from('events')
+            .upsert(events.map((event) => ({ id: event.id, name: event.name })));
+        }
+
         const { error } = await client
           .from('gift_records')
           .upsert(snapshot.map((record) => toSupabaseRow(record)));
@@ -707,7 +762,7 @@ function AppContent() {
     try {
       const { data, error } = await supabase
         .from('gift_records')
-        .select('id, guest, type, quantity, value, note, has_quantity, direction, gift_date')
+        .select('id, guest, type, quantity, value, note, has_quantity, direction, gift_date, event_id')
         .eq('user_id', ownerId)
         .order('created_at', { ascending: false });
 
@@ -723,6 +778,7 @@ function AppContent() {
         hasQuantity: Boolean(record.has_quantity),
         direction: (record.direction as GiftDirection) ?? 'Gelen',
         giftDate: record.gift_date ?? todayIsoDate(),
+        eventId: record.event_id ?? '',
       }));
 
       setSharedRecords(mapped);
@@ -747,6 +803,7 @@ function AppContent() {
     const normalizedSearch = search.trim().toLocaleLowerCase('tr-TR');
 
     return displayedRecords.filter((record) => {
+      const matchesEvent = viewingShare || !selectedEventId || record.eventId === selectedEventId;
       const matchesCategory =
         selectedCategory === 'Tümü' || record.type === selectedCategory;
       const matchesDirection =
@@ -755,9 +812,9 @@ function AppContent() {
         !normalizedSearch ||
         record.guest.toLocaleLowerCase('tr-TR').includes(normalizedSearch);
 
-      return matchesCategory && matchesDirection && matchesSearch;
+      return matchesEvent && matchesCategory && matchesDirection && matchesSearch;
     });
-  }, [displayedRecords, search, selectedCategory, selectedDirection]);
+  }, [displayedRecords, search, selectedCategory, selectedDirection, selectedEventId, viewingShare]);
 
   const resetForm = () => {
     setGuest('');
@@ -767,6 +824,7 @@ function AppContent() {
     setDirection('Gelen');
     setNote('');
     setGiftDate(todayIsoDate());
+    setFormEventId(selectedEventId);
   };
 
   const addCategory = async () => {
@@ -782,6 +840,46 @@ function AppContent() {
     setType(category);
     setNewCategory('');
     setIsCategoryFormVisible(false);
+  };
+
+  const openAddEventModal = (context: 'main' | 'form') => {
+    setIsEventPickerVisible(false);
+    setIsFormEventPickerVisible(false);
+    setAddEventContext(context);
+    setNewEventName('');
+    setTimeout(() => setIsAddEventModalVisible(true), 250);
+  };
+
+  const addEvent = async () => {
+    const name = newEventName.trim();
+    if (!name) {
+      return;
+    }
+
+    setIsSavingEvent(true);
+    try {
+      const newEvent: LocalEvent = { id: createRecordId(), name };
+
+      if (Platform.OS !== 'web') {
+        await saveLocalEvent(newEvent);
+      }
+      if (supabase && session) {
+        await supabase.from('events').insert({ id: newEvent.id, name: newEvent.name });
+      }
+
+      setEvents((current) => [...current, newEvent]);
+      if (addEventContext === 'form') {
+        setFormEventId(newEvent.id);
+      } else {
+        setSelectedEventId(newEvent.id);
+      }
+      setNewEventName('');
+      setIsAddEventModalVisible(false);
+    } catch {
+      Alert.alert('Hata', 'Etkinlik eklenemedi.');
+    } finally {
+      setIsSavingEvent(false);
+    }
   };
 
   const addRecord = async () => {
@@ -800,6 +898,7 @@ function AppContent() {
       hasQuantity,
       direction,
       giftDate: normalizeIsoDate(giftDate),
+      eventId: formEventId || selectedEventId,
     };
 
     setIsSaving(true);
@@ -811,7 +910,7 @@ function AppContent() {
       const { data, error } = await supabase
         .from('gift_records')
         .insert(toSupabaseRow(newRecord))
-        .select('id, guest, type, quantity, value, note, has_quantity, direction, gift_date')
+        .select('id, guest, type, quantity, value, note, has_quantity, direction, gift_date, event_id')
         .single();
 
       if (error) {
@@ -827,6 +926,7 @@ function AppContent() {
         hasQuantity: Boolean(data.has_quantity),
         direction: data.direction as GiftDirection,
         giftDate: data.gift_date,
+        eventId: data.event_id ?? '',
       };
     }
 
@@ -867,6 +967,7 @@ function AppContent() {
     setDirection(record.direction);
     setNote(record.note);
     setGiftDate(record.giftDate || todayIsoDate());
+    setFormEventId(record.eventId || selectedEventId);
     setEditingId(record.id);
     setIsFormVisible(true);
   };
@@ -935,10 +1036,15 @@ function AppContent() {
   };
 
   const exportRecords = async () => {
+    const eventNameById = new Map(events.map((event) => [event.id, event.name]));
     const payload = {
       exportedAt: new Date().toISOString(),
       recordCount: records.length,
-      records,
+      events,
+      records: records.map((record) => ({
+        ...record,
+        eventName: eventNameById.get(record.eventId) ?? '',
+      })),
     };
     const json = JSON.stringify(payload, null, 2);
     const fileName = `takitakip-export-${new Date().toISOString().slice(0, 10)}.json`;
@@ -999,6 +1105,28 @@ function AppContent() {
 
       setIsSaving(true);
 
+      const importedEvents: LocalEvent[] = Array.isArray(parsed?.events) ? parsed.events : [];
+      const knownEventIds = new Set(events.map((event) => event.id));
+      const newEvents = importedEvents.filter(
+        (event) =>
+          typeof event?.id === 'string' &&
+          typeof event?.name === 'string' &&
+          event.name &&
+          !knownEventIds.has(event.id),
+      );
+
+      for (const event of newEvents) {
+        if (Platform.OS !== 'web') {
+          await saveLocalEvent(event);
+        }
+        if (supabase && session) {
+          await supabase.from('events').insert({ id: event.id, name: event.name });
+        }
+      }
+      if (newEvents.length) {
+        setEvents((current) => [...current, ...newEvents]);
+      }
+
       const normalizedRecords: LocalGiftRecord[] = importedRecords.map((record) => ({
         id: typeof record?.id === 'string' && record.id ? record.id : createRecordId(),
         guest: String(record?.guest ?? ''),
@@ -1012,6 +1140,10 @@ function AppContent() {
           typeof record?.giftDate === 'string' && record.giftDate
             ? record.giftDate
             : todayIsoDate(),
+        eventId:
+          typeof record?.eventId === 'string' && record.eventId
+            ? record.eventId
+            : selectedEventId,
       }));
 
       for (const record of normalizedRecords) {
@@ -1070,6 +1202,7 @@ function AppContent() {
       hasQuantity,
       direction,
       giftDate: normalizeIsoDate(giftDate),
+      eventId: formEventId || recordToEdit.eventId || selectedEventId,
     };
 
     setIsSaving(true);
@@ -1086,9 +1219,10 @@ function AppContent() {
           has_quantity: updatedRecord.hasQuantity,
           direction: updatedRecord.direction,
           gift_date: updatedRecord.giftDate,
+          event_id: updatedRecord.eventId || null,
         })
         .eq('id', updatedRecord.id)
-        .select('id, guest, type, quantity, value, note, has_quantity, direction, gift_date')
+        .select('id, guest, type, quantity, value, note, has_quantity, direction, gift_date, event_id')
         .single();
 
       if (error) {
@@ -1104,6 +1238,7 @@ function AppContent() {
       updatedRecord.hasQuantity = Boolean(data.has_quantity);
       updatedRecord.direction = data.direction as GiftDirection;
       updatedRecord.giftDate = data.gift_date;
+      updatedRecord.eventId = data.event_id ?? '';
     }
 
     if (Platform.OS !== 'web') {
@@ -1153,6 +1288,21 @@ function AppContent() {
                 <Text style={styles.headerMarkText}>TT</Text>
               </Pressable>
             </View>
+
+            {!viewingShare ? (
+              <Pressable
+                style={styles.eventField}
+                onPress={() => setIsEventPickerVisible(true)}
+              >
+                <Text style={styles.eventFieldLabel}>ETKİNLİK</Text>
+                <View style={styles.eventFieldValueRow}>
+                  <Text style={styles.eventFieldValue}>
+                    {events.find((event) => event.id === selectedEventId)?.name ?? 'Etkinlik seç'}
+                  </Text>
+                  <Text style={styles.eventFieldChevron}>⌄</Text>
+                </View>
+              </Pressable>
+            ) : null}
 
             {viewingShare ? (
               <View style={styles.sharedBanner}>
@@ -1861,6 +2011,17 @@ function AppContent() {
               </Pressable>
             </View>
 
+            <Text style={styles.inputLabel}>Etkinlik</Text>
+            <Pressable
+              style={styles.comboboxField}
+              onPress={() => setIsFormEventPickerVisible(true)}
+            >
+              <Text style={styles.comboboxValue}>
+                {events.find((event) => event.id === formEventId)?.name ?? 'Etkinlik seç'}
+              </Text>
+              <Text style={styles.comboboxChevron}>⌄</Text>
+            </Pressable>
+
             <View style={styles.formDirectionRow}>
               {(['Gelen', 'Giden'] as GiftDirection[]).map((item) => (
                 <Pressable
@@ -2039,6 +2200,142 @@ function AppContent() {
           </View>
         </Pressable>
       </Modal>
+
+      <Modal
+        visible={isEventPickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsEventPickerVisible(false)}
+      >
+        <Pressable
+          style={styles.actionBackdrop}
+          onPress={() => setIsEventPickerVisible(false)}
+        >
+          <View style={styles.comboboxSheet}>
+            <Text style={styles.actionTitle}>Etkinlik seç</Text>
+            <FlatList
+              data={events}
+              keyExtractor={(item) => item.id}
+              style={styles.comboboxList}
+              renderItem={({ item }) => (
+                <Pressable
+                  style={[
+                    styles.comboboxOption,
+                    selectedEventId === item.id && styles.comboboxOptionActive,
+                  ]}
+                  onPress={() => {
+                    setSelectedEventId(item.id);
+                    setIsEventPickerVisible(false);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.comboboxOptionText,
+                      selectedEventId === item.id && styles.comboboxOptionTextActive,
+                    ]}
+                  >
+                    {item.name}
+                  </Text>
+                </Pressable>
+              )}
+            />
+            <Pressable
+              style={styles.addEventButton}
+              onPress={() => openAddEventModal('main')}
+            >
+              <Text style={styles.addEventButtonText}>+ Yeni Etkinlik</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={isFormEventPickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsFormEventPickerVisible(false)}
+      >
+        <Pressable
+          style={styles.actionBackdrop}
+          onPress={() => setIsFormEventPickerVisible(false)}
+        >
+          <View style={styles.comboboxSheet}>
+            <Text style={styles.actionTitle}>Etkinlik seç</Text>
+            <FlatList
+              data={events}
+              keyExtractor={(item) => item.id}
+              style={styles.comboboxList}
+              renderItem={({ item }) => (
+                <Pressable
+                  style={[
+                    styles.comboboxOption,
+                    formEventId === item.id && styles.comboboxOptionActive,
+                  ]}
+                  onPress={() => {
+                    setFormEventId(item.id);
+                    setIsFormEventPickerVisible(false);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.comboboxOptionText,
+                      formEventId === item.id && styles.comboboxOptionTextActive,
+                    ]}
+                  >
+                    {item.name}
+                  </Text>
+                </Pressable>
+              )}
+            />
+            <Pressable
+              style={styles.addEventButton}
+              onPress={() => openAddEventModal('form')}
+            >
+              <Text style={styles.addEventButtonText}>+ Yeni Etkinlik</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={isAddEventModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsAddEventModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.actionBackdrop}
+        >
+          <View style={styles.categoryForm}>
+            <Text style={styles.actionTitle}>Yeni etkinlik</Text>
+            <Text style={styles.actionSubtitle}>
+              Örn. Kızımın Düğünü, Oğlumun Sünneti, Komşunun Nişanı
+            </Text>
+            <TextInput
+              value={newEventName}
+              onChangeText={setNewEventName}
+              placeholder="Etkinlik adı"
+              placeholderTextColor="#9B958A"
+              style={styles.input}
+              autoFocus
+            />
+            <View style={styles.categoryFormActions}>
+              <Pressable
+                style={styles.categoryCancel}
+                onPress={() => setIsAddEventModalVisible(false)}
+              >
+                <Text style={styles.actionCancelText}>İptal</Text>
+              </Pressable>
+              <Pressable style={styles.categorySave} onPress={() => void addEvent()}>
+                <Text style={styles.categorySaveText}>
+                  {isSavingEvent ? 'Ekleniyor...' : 'Ekle'}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 }
@@ -2065,6 +2362,16 @@ const styles = StyleSheet.create({
   sharedBannerTitle: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
   sharedBannerSubtitle: { color: '#B7C4C0', fontSize: 11, marginTop: 2 },
   sharedBannerExit: { color: '#E6B85C', fontSize: 13, fontWeight: '700' },
+  eventField: {
+    backgroundColor: '#FFFFFF', borderColor: '#ECE7DE', borderRadius: 13, borderWidth: 1,
+    marginBottom: 14, paddingHorizontal: 14, paddingVertical: 10,
+  },
+  eventFieldLabel: { color: '#B56A45', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
+  eventFieldValueRow: {
+    alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 3,
+  },
+  eventFieldValue: { color: '#25231F', fontSize: 16, fontWeight: '800' },
+  eventFieldChevron: { color: '#918B81', fontSize: 16 },
   searchBox: {
     alignItems: 'center', backgroundColor: '#FFFFFF', borderColor: '#ECE7DE', borderRadius: 13,
     borderWidth: 1, flexDirection: 'row', height: 52, paddingHorizontal: 14,
@@ -2199,6 +2506,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#F7F4EE', borderRadius: 20, maxHeight: '70%', padding: 20, width: '100%',
   },
   comboboxList: { marginTop: 4 },
+  addEventButton: { alignItems: 'center', borderTopColor: '#ECE7DE', borderTopWidth: 1, marginTop: 10, paddingTop: 14 },
+  addEventButtonText: { color: '#B56A45', fontSize: 14, fontWeight: '800' },
   comboboxOption: { borderRadius: 11, padding: 14 },
   comboboxOptionActive: { backgroundColor: '#FFFFFF' },
   comboboxOptionText: { color: '#4C4841', fontSize: 15, fontWeight: '600' },
